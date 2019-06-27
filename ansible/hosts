@@ -1,0 +1,8 @@
+[test]
+test.domain.tld ansible_user=test
+
+[prod]
+main.domain.tld
+worker-01.domain.tld
+worker-02.domain.tld
+worker-03.domain.tld

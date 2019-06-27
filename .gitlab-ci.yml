@@ -1,0 +1,130 @@
+variables:
+  ANSIBLE_CONFIG: ansible/ansible.cfg
+  POSTGRES_PASSWORD: postgres
+
+image: registry.domain.tld/infra/base:php71
+
+stages:
+  - build
+  - test
+  - deploy-int
+  - deploy-ext
+
+cache:
+  key: ${CI_PROJECT_NAME}
+  paths:
+    - vendor/
+    - node_modules/
+
+before_script:
+  - eval $(ssh-agent -s)
+  - echo "$GITLAB_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+  - echo "$TEST_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+  - if [ -n "$PROD_SSH_PRIVATE_KEY" ]; then echo "$PROD_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -; fi
+  - mkdir -p ~/.ssh
+  - chmod 0700 ~/.ssh
+  - echo -e "Host *\n\tStrictHostKeyChecking no\n\tUser user\n" >> ~/.ssh/config
+
+composer:
+  stage: build
+  script:
+    - composer install --prefer-dist
+  artifacts:
+    expire_in: 1 month
+    paths:
+      - vendor/
+
+npm:
+  stage: build
+  script:
+    - npm install
+  artifacts:
+    expire_in: 1 month
+    paths:
+      - node_modules/
+
+phpunit:
+  stage: test
+  variables:
+    REDIS_PORT: 6379
+  services:
+    - name: mdillon/postgis:10
+      alias: postgres
+    - name: redis
+  dependencies:
+    - composer
+  script:
+    - ansible-playbook ansible/test.yml
+    - php artisan key:generate
+    - php artisan migrate --force
+    - php artisan db:seed --class="Seeds\Rent\RentSeedStarter"
+    - vendor/bin/phpunit --process-isolation
+
+deploy_test:
+  stage: deploy-int
+  environment: testing
+  dependencies:
+    - composer
+  script:
+    - ansible-playbook --limit 'test' --skip-tags 'prod' ansible/deploy.yml 
+  only:
+    - dev
+
+deploy_prod_int:
+  stage: deploy-int
+  environment: production
+  dependencies:
+    - composer
+  script:
+    - ansible-playbook --limit 'worker-01.domain.tld' --skip-tags 'test' ansible/deploy.yml
+  only:
+    - tags
+  except:
+    - branches
+  allow_failure: false
+  when: manual
+
+deploy_prod_ext_main:
+  stage: deploy-ext
+  environment: production
+  dependencies:
+    - composer
+    - npm
+  script:
+    - ansible-playbook --limit '!test,!worker-01.domain.tld,!worker-02.domain.tld,!worker-03.domain.tld' --skip-tags 'test' ansible/deploy.yml
+  only:
+    - tags
+  except:
+    - branches
+  allow_failure: false
+  when: manual
+
+deploy_prod_ext_worker2:
+  stage: deploy-ext
+  environment: production
+  dependencies:
+    - composer
+    - npm
+  script:
+    - ansible-playbook --limit 'worker-02.domain.tld' --skip-tags 'test' ansible/deploy.yml
+  only:
+    - tags
+  except:
+    - branches
+  allow_failure: false
+  when: manual
+
+deploy_prod_ext_worker3:
+  stage: deploy-ext
+  environment: production
+  dependencies:
+    - composer
+    - npm
+  script:
+    - ansible-playbook --limit 'worker-03.domain.tld' --skip-tags 'test' ansible/deploy.yml
+  only:
+    - tags
+  except:
+    - branches
+  allow_failure: false
+  when: manual

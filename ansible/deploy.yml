@@ -1,0 +1,135 @@
+---
+- hosts: all
+
+  gather_facts: no
+
+  tasks:
+    - include: variables.yml
+
+    - name: Ensure releases directory exists with correct owner, group and permissions
+      become: yes
+      file:
+        dest: "{{ base_dir }}/releases"
+        owner: www-data
+        group: www-data
+        mode: u=rwx,g=rwx,o=rx,g+s
+        state: directory
+
+    - name: Ensure storage directory exists...
+      become: yes
+      file:
+        dest: "{{ base_dir }}/storage"
+        owner: www-data
+        group: www-data
+        mode: u=rwx,g=rwx,o=rx,g+s
+        state: directory
+     
+    - name: ...with correct owner, group and permissions
+      become: yes
+      shell: find {{ base_dir}}/storage -type f -exec chmod 664 {} \; && find {{ base_dir }}/storage -type d -exec chmod 775 {} \;
+
+    - name: Deploy service code to target servers
+      synchronize:
+        src: ../../
+        dest: "{{ deploy_dir }}"
+
+    - name: Fix files permissions
+      command: find . -type f -not -path "./vendor/*" -exec chmod 664 {} \;
+      args:
+        chdir: "{{ deploy_dir }}"
+
+    - name: Fix directory permissions
+      command: find . -type d -not -path "./vendor/*" -exec chmod 775 {} \;
+      args:
+        chdir: "{{ deploy_dir }}"
+
+    - name: Create .env file for test
+      template:
+        src: env.test.j2
+        dest: "{{ deploy_dir }}/.env"
+      tags:
+        - test
+
+    - name: Create .env file for prod
+      template:
+        src: env.prod.j2
+        dest: "{{ deploy_dir }}/.env"
+      tags:
+        - prod
+
+    - name: Remove storage directory
+      file:
+        dest: "{{ deploy_dir }}/storage"
+        state: absent
+
+    - name: Create storage symlink
+      file:
+        src: ../../storage
+        dest: "{{ deploy_dir }}/storage"
+        state: link
+
+    - name: Do migrations on worker-01.domain.tld
+      shell: echo "cd {{ deploy_dir }}; php artisan migrate --force"
+      when: ansible_host == "test.domain.tld" or ansible_host == "worker-01.domain.tld"
+      register: output
+    - debug: msg={{ output.stdout_lines }}
+      when: ansible_host == "rent.domain.tld" or ansible_host == "worker-01.domain.tld"
+
+    - name: Generate application key
+      shell: cd {{ deploy_dir }}; php artisan key:generate
+
+    - name: Clean serializer cache
+      shell: rm -rf {{ deploy_dir }}/storage/framework/cache/serializer/metadata/*
+
+    - name: Cache routes
+      shell: cd {{ deploy_dir }}; php artisan route:cache
+
+    - name: Change destination directory contents owner
+      become: yes
+      shell: chown -R www-data:www-data {{ deploy_dir }}
+
+    - name: Switch current symlink
+      file:
+        src: releases/{{ release }}
+        dest: "{{ base_dir }}/current"
+        state: link
+
+    - name: Clear opcache
+      become: yes
+      systemd:
+        service: php7.1-fpm.service
+        state: reloaded
+        enabled: yes
+      tags:
+        - prod
+
+    - name: Copy supervisord configuration
+      become: yes
+      copy:
+        src: supervisord.{{ ansible_host.split('.')[0] }}.conf
+        dest: /etc/supervisor/conf.d/{{ service_name }}.conf
+
+    - name: Update supervisord configuration
+      become: yes
+      command: supervisorctl update {{ service_name }}-workers
+
+    - name: Restart supervisord group
+      become: yes
+      command: supervisorctl restart {{ service_name }}-workers:*
+      register: output
+    - debug: msg={{ output.stdout_lines }}
+
+    - name: Add artisan scheduler for service to www-data crontab
+      become: yes
+      lineinfile:
+        dest: /var/spool/cron/crontabs/www-data
+        backup: yes
+        create: yes
+        owner: www-data
+        group: crontab
+        mode: 0600
+        line: "* * * * * cd {{ base_dir }}/current/ && php artisan schedule:run >/dev/null 2>&1"
+        state: present
+
+    - name: Remove obsolete releases
+      shell: cd {{ base_dir }}/releases; ls -t1 | tail -n +$(({{ keep_releases }} + 1)) | xargs sudo rm -rf

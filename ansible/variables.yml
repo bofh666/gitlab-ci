@@ -1,0 +1,37 @@
+---
+  - name: Assign service name
+    set_fact:
+      service_name: "{{ lookup('env','CI_PROJECT_NAME') }}"
+    run_once: yes
+    delegate_to: localhost
+
+  - name: Assign target base directory
+    set_fact:
+      base_dir: /var/www-data/{{ service_name }}
+    run_once: yes
+    delegate_to: localhost
+
+  - name: Assign release name
+    set_fact:
+      release: "{{ lookup('env','CI_COMMIT_TAG') }}"
+    run_once: yes
+    delegate_to: localhost
+
+  - name: Assign number of releases to keep
+    set_fact:
+      keep_releases: 5
+    run_once: yes
+    delegate_to: localhost
+
+  - name: Check if we're deploying to test or prod
+    set_fact:
+      release: "{{ lookup('env','CI_JOB_ID') }}"
+    run_once: yes
+    delegate_to: localhost
+    when: release is undefined or release|trim == ''
+
+  - name: Assign destination directory
+    set_fact:
+      deploy_dir: "{{ base_dir }}/releases/{{ release }}"
+    run_once: yes
+    delegate_to: localhost

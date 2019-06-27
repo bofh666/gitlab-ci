@@ -1,0 +1,22 @@
+---
+- hosts: 127.0.0.1
+  connection: local
+
+  gather_facts: no
+
+  tasks:
+    - include: variables.yml
+
+    - name: Create .pgpass
+      template:
+        src: pgpass.j2
+        dest: ~/.pgpass
+        mode: 0600
+
+    - name: Restore database dump
+      shell: zcat files/db_dump.sql.gz | psql -h postgres -U postgres -w -d postgres
+
+    - name: Create test .env
+      copy:
+        src: env.unittest
+        dest: ../.env
